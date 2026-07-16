@@ -1,0 +1,37 @@
+name: Cleanup Studio Package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  packages: write
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete conflicting grok2api-studio package owned by monorepo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          OWNER="${{ github.repository_owner }}"
+          PACKAGE="grok2api-studio"
+          echo "Trying to delete package: $OWNER/$PACKAGE"
+
+          # Prefer user package delete; fall back to org package delete.
+          if gh api -X DELETE "/user/packages/container/${PACKAGE}"; then
+            echo "Deleted user package ${PACKAGE}"
+            exit 0
+          fi
+
+          if gh api -X DELETE "/users/${OWNER}/packages/container/${PACKAGE}"; then
+            echo "Deleted users package ${PACKAGE}"
+            exit 0
+          fi
+
+          echo "Package delete endpoints returned non-zero; listing package metadata for diagnosis"
+          gh api "/user/packages/container/${PACKAGE}" || true
+          gh api "/users/${OWNER}/packages/container/${PACKAGE}" || true
+          exit 1
