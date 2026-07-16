@@ -1,0 +1,57 @@
+# OS and editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+/config.yaml
+/config.local.yaml
+/config.*.local.yaml
+/docs/rules/
+*.har
+*.pcap
+*.pcapng
+
+# Runtime data
+/data/
+/backend/data/
+*.log
+
+# Go
+/.gocache/
+/backend/grok2api
+/backend/coverage.out
+*.coverprofile
+*.test
+
+# Frontend
+/.pnpm-store/
+/frontend/node_modules/
+/frontend/dist/
+/frontend/.cache/
+/frontend/*.tsbuildinfo
+
+# Temporary files
+/release/
+/.tmp/
+/tmp/
+
+# Studio
+/studio/node_modules/
+/studio/dist/
+/studio/.cache/
+/studio/*.tsbuildinfo
+/studio/*.log
+/studio/.env
+/studio/.env.*
+!/studio/.env.example
+/studio/patch*.diff
+/studio/*.patch
+
