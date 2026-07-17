@@ -1,6 +1,7 @@
 package web
 
 import (
+	"net/url"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
@@ -63,7 +65,7 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 		return provider.VideoResult{}, parseErr
 	}
 	if result.URL == "" {
-		return provider.VideoResult{}, fmt.Errorf("视频生成完成但没有返回内容 URL")
+		return provider.VideoResult{}, fmt.Errorf("???? URL ????")
 	}
 	return result, nil
 }
@@ -216,4 +218,62 @@ func videoCreatePayload(prompt, parentID, ratio, resolution string, seconds int,
 		"temporary": true, "modelName": "imagine-video-gen", "message": prompt + " --mode=custom", "enableSideBySide": true,
 		"responseMetadata": map[string]any{"experiments": []any{}, "modelConfigOverride": map[string]any{"modelMap": map[string]any{"videoGenModelConfig": config}}},
 	}
+}
+
+
+// OpenVideoAsset streams a completed Grok asset video with SSO cookies.
+// Browser-side anonymous downloads of assets.grok.com often receive HTTP 403.
+func (a *Adapter) OpenVideoAsset(ctx context.Context, credential account.Credential, rawURL, rangeHeader string) (io.ReadCloser, http.Header, int, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Scheme != "https" || !trustedImageAssetHost(parsed.Hostname()) || parsed.User != nil {
+		return nil, nil, 0, fmt.Errorf("???? URL ????")
+	}
+	token, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	lease, err := a.egress.Acquire(ctx, domainegress.ScopeWebAsset, fmt.Sprintf("%d", credential.ID))
+	if err != nil {
+		return nil, nil, 0, err
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		lease.Release()
+		return nil, nil, 0, err
+	}
+	request.Header = buildHeaders(token, lease, "")
+	request.Header.Del("Content-Type")
+	request.Header.Set("Accept", "video/mp4,video/*;q=0.9,*/*;q=0.8")
+	request.Header.Set("Referer", "https://grok.com/")
+	request.Header.Set("Origin", "https://grok.com")
+	if value := strings.TrimSpace(rangeHeader); value != "" {
+		request.Header.Set("Range", value)
+	}
+
+	response, err := lease.Do(request)
+	if err != nil {
+		lease.Release()
+		return nil, nil, 0, err
+	}
+	// Keep the egress lease alive until the caller finishes reading the body.
+	return &leaseClosingBody{ReadCloser: response.Body, release: lease.Release}, response.Header.Clone(), response.StatusCode, nil
+}
+
+type leaseClosingBody struct {
+	io.ReadCloser
+	release func()
+	closed  bool
+}
+
+func (b *leaseClosingBody) Close() error {
+	if b.closed {
+		return nil
+	}
+	b.closed = true
+	err := b.ReadCloser.Close()
+	if b.release != nil {
+		b.release()
+	}
+	return err
 }

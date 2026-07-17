@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"strings"
+	"io"
 	"context"
 	"encoding/json"
 	"errors"
@@ -407,3 +409,55 @@ func (s *Service) persistVideoJobWithRetry(job media.Job) error {
 	}
 	return lastErr
 }
+
+
+// OpenVideoContent streams a completed job's upstream MP4 using the job account credentials.
+// Anonymous CDN access is frequently blocked with HTTP 403.
+func (s *Service) OpenVideoContent(ctx context.Context, id string, key clientkey.Key, rangeHeader string) (io.ReadCloser, http.Header, int, string, error) {
+	job, err := s.GetVideo(ctx, id, key)
+	if err != nil {
+		return nil, nil, 0, "", err
+	}
+	if job.Status != media.StatusCompleted {
+		return nil, nil, 0, "", fmt.Errorf("???????????????")
+	}
+	upstreamURL := strings.TrimSpace(job.UpstreamURL)
+	if upstreamURL == "" {
+		return nil, nil, 0, "", fmt.Errorf("????????????? URL")
+	}
+
+	view, err := s.accounts.Get(ctx, job.AccountID)
+	if err != nil {
+		return nil, nil, 0, "", fmt.Errorf("??????????: %w", err)
+	}
+	credential, err := s.accounts.EnsureCredential(ctx, view.Credential, false)
+	if err != nil {
+		return nil, nil, 0, "", fmt.Errorf("???????: %w", err)
+	}
+
+	adapter, ok := s.providers.Videos(account.Provider(job.Provider))
+	if !ok {
+		// Fallback to web adapter provider if job provider string is raw.
+		adapter, ok = s.providers.Videos(account.ProviderWeb)
+	}
+	if !ok {
+		return nil, nil, 0, "", ErrNoAvailableAccount
+	}
+	opener, ok := adapter.(interface {
+		OpenVideoAsset(ctx context.Context, credential account.Credential, rawURL, rangeHeader string) (io.ReadCloser, http.Header, int, error)
+	})
+	if !ok {
+		return nil, nil, 0, "", fmt.Errorf("?? Provider ?????????")
+	}
+
+	body, header, status, err := opener.OpenVideoAsset(ctx, credential, upstreamURL, rangeHeader)
+	if err != nil {
+		return nil, nil, 0, "", err
+	}
+	contentType := strings.TrimSpace(job.ContentType)
+	if contentType == "" {
+		contentType = "video/mp4"
+	}
+	return body, header, status, contentType, nil
+}
+

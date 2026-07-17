@@ -84,8 +84,9 @@ func TestVideoGenerationUsesOfficialXAIEndpointsAndFields(t *testing.T) {
 	}
 	contentRecorder := httptest.NewRecorder()
 	router.ServeHTTP(contentRecorder, httptest.NewRequest(http.MethodGet, "/v1/videos/request_1/content", nil))
-	if contentRecorder.Code != http.StatusNotFound {
-		t.Fatalf("video content endpoint status=%d", contentRecorder.Code)
+	// Content endpoint is registered and requires client-key auth first.
+	if contentRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("video content endpoint status=%d body=%s", contentRecorder.Code, contentRecorder.Body.String())
 	}
 }
 

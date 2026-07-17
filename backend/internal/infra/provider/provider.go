@@ -187,6 +187,9 @@ type ImageAssetStore interface {
 type VideoAdapter interface {
 	Adapter
 	GenerateVideo(ctx context.Context, request VideoRequest) (VideoResult, error)
+	// OpenVideoAsset downloads a completed assets.grok.com video using the
+	// same SSO/cookie context as image rehost. Anonymous CDN fetches often 403.
+	OpenVideoAsset(ctx context.Context, credential account.Credential, rawURL, rangeHeader string) (body io.ReadCloser, header http.Header, status int, err error)
 }
 
 type RoutingMetadataAdapter interface {

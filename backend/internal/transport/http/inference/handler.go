@@ -54,6 +54,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/images/edits", h.editImage)
 	router.POST("/videos/generations", h.generateVideo)
 	router.GET("/videos/:requestId", h.getVideo)
+	router.GET("/videos/:requestId/content", h.getVideoContent)
 	router.POST("/responses/compact", h.compactResponse)
 	router.GET("/responses/:responseId", h.getResponse)
 	router.DELETE("/responses/:responseId", h.deleteResponse)
@@ -525,6 +526,102 @@ func (h *Handler) getVideo(c *gin.Context) {
 	c.JSON(http.StatusOK, videoGenerationResponse(job))
 }
 
+// getVideoContent streams the completed video through the gateway so clients
+// that cannot reach assets.grok.com can still preview/download the media.
+// The gateway uses the job account SSO cookies; anonymous CDN GETs usually 403.
+func (h *Handler) getVideoContent(c *gin.Context) {
+	clientKey, _, ok := requestIdentity(c)
+	if !ok {
+		return
+	}
+	requestID := strings.TrimSpace(c.Param("requestId"))
+	rangeHeader := strings.TrimSpace(c.GetHeader("Range"))
+
+	body, header, status, fallbackType, err := h.gateway.OpenVideoContent(c.Request.Context(), requestID, clientKey, rangeHeader)
+	if err != nil {
+		message := err.Error()
+		switch {
+		case strings.Contains(message, "??????"):
+			writeOpenAIError(c, http.StatusConflict, "video_not_ready", message)
+		case strings.Contains(message, "?????? URL"):
+			writeOpenAIError(c, http.StatusNotFound, "video_url_missing", message)
+		default:
+			writeGatewayError(c, err)
+		}
+		return
+	}
+	defer body.Close()
+
+	if status >= 400 {
+		raw, _ := io.ReadAll(io.LimitReader(body, 2048))
+		message := strings.TrimSpace(string(raw))
+		if message == "" {
+			message = fmt.Sprintf("?????? HTTP %d", status)
+		}
+		writeOpenAIError(c, http.StatusBadGateway, "video_fetch_failed", message)
+		return
+	}
+
+	contentType := ""
+	if header != nil {
+		contentType = strings.TrimSpace(header.Get("Content-Type"))
+	}
+	if contentType == "" {
+		contentType = strings.TrimSpace(fallbackType)
+	}
+	if contentType == "" {
+		contentType = "video/mp4"
+	}
+	c.Header("Content-Type", contentType)
+	if header != nil {
+		if contentLength := strings.TrimSpace(header.Get("Content-Length")); contentLength != "" {
+			c.Header("Content-Length", contentLength)
+		}
+		if contentRange := strings.TrimSpace(header.Get("Content-Range")); contentRange != "" {
+			c.Header("Content-Range", contentRange)
+		}
+		if acceptRanges := strings.TrimSpace(header.Get("Accept-Ranges")); acceptRanges != "" {
+			c.Header("Accept-Ranges", acceptRanges)
+		} else {
+			c.Header("Accept-Ranges", "bytes")
+		}
+	} else {
+		c.Header("Accept-Ranges", "bytes")
+	}
+	c.Header("Cache-Control", "private, max-age=300")
+	c.Header("Content-Disposition", fmt.Sprintf("inline; filename=\"%s.mp4\"", sanitizeVideoFilename(requestID)))
+	if status <= 0 {
+		status = http.StatusOK
+	}
+	c.Status(status)
+
+	if err := copyMedia(responseDeadlineWriter{ResponseWriter: c.Writer}, body, maxMediaResponseTransferBytes); err != nil {
+		// Client disconnect / transfer interrupt: nothing more to write safely.
+		return
+	}
+}
+
+func sanitizeVideoFilename(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "video"
+	}
+	var b strings.Builder
+	for _, r := range value {
+		switch r {
+		case '\\', '/', ':', '*', '?', '"', '<', '>', '|':
+			b.WriteByte('_')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	value = b.String()
+	if len(value) > 80 {
+		value = value[:80]
+	}
+	return value
+}
+
 func parseVideoDuration(durationRaw json.RawMessage) (int, error) {
 	duration, hasDuration, err := parseOptionalVideoInteger(durationRaw)
 	if err != nil {
@@ -578,7 +675,13 @@ func videoGenerationResponse(job mediadomain.Job) gin.H {
 	case mediadomain.StatusCompleted:
 		return gin.H{
 			"status": "done", "model": job.Model, "progress": 100,
-			"video": gin.H{"url": job.UpstreamURL, "duration": job.Seconds, "respect_moderation": true},
+			"video": gin.H{
+				"url":                 job.UpstreamURL,
+				"duration":            job.Seconds,
+				"respect_moderation":  true,
+				"content_path":        "/v1/videos/" + job.ID + "/content",
+				"content_url":         "/v1/videos/" + job.ID + "/content",
+			},
 		}
 	case mediadomain.StatusFailed:
 		return gin.H{
